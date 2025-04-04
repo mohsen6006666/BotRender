@@ -5,7 +5,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
 TORRENT_CACHE = {}
 
@@ -74,12 +73,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Use webhook method to avoid polling conflicts
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.environ.get("WEBHOOK_URL")
-    )
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
