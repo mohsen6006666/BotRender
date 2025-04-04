@@ -1,67 +1,74 @@
 import os
+import logging
 import requests
-from flask import Flask
-from threading import Thread
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ContextTypes
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-YTS_API_URL = 'https://yts.mx/api/v2/list_movies.json'
+logging.basicConfig(level=logging.INFO)
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_web():
-    app.run(host='0.0.0.0', port=8080)
+# Store search results in memory for each user
+user_search_data = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send /search <movie name> to get the .torrent file from YTS.")
+    await update.message.reply_text("Welcome! Use /search <movie name> to find a YTS torrent.")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Please provide a movie name.")
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text("Please provide a movie name. Example: /search Interstellar")
         return
 
-    query = ' '.join(context.args)
-    response = requests.get(YTS_API_URL, params={'query_term': query})
-    data = response.json()
+    url = f"https://yts.mx/api/v2/list_movies.json?query_term={query}"
+    response = requests.get(url).json()
 
-    movies = data.get('data', {}).get('movies', [])
+    movies = response.get("data", {}).get("movies", [])
+
     if not movies:
         await update.message.reply_text("No movies found.")
         return
 
-    movie = movies[0]
-    title = movie['title']
-    torrents = movie.get('torrents', [])
+    # Save movie data to handle button clicks
+    user_id = update.effective_user.id
+    user_search_data[user_id] = movies
 
-    if not torrents:
-        await update.message.reply_text("No torrent files available.")
+    keyboard = []
+    for i, movie in enumerate(movies):
+        title = f"{movie['title']} ({movie['year']})"
+        keyboard.append([InlineKeyboardButton(title, callback_data=str(i))])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select a movie:", reply_markup=reply_markup)
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    movies = user_search_data.get(user_id, [])
+
+    index = int(query.data)
+    if index >= len(movies):
+        await query.edit_message_text("Invalid selection.")
         return
 
-    torrent = torrents[0]
-    torrent_url = torrent['url']
-    file_name = f"{title}.torrent"
-    file_path = os.path.join("downloads", file_name)
+    movie = movies[index]
+    torrents = movie.get("torrents", [])
+    if not torrents:
+        await query.edit_message_text("No torrents found for this movie.")
+        return
 
-    os.makedirs("downloads", exist_ok=True)
-    with open(file_path, 'wb') as f:
-        f.write(requests.get(torrent_url).content)
-
-    with open(file_path, 'rb') as f:
-        await update.message.reply_document(f, filename=file_name, caption=f"{title} - Torrent File")
-
-    os.remove(file_path)
-
-def start_bot():
-    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("search", search))
-    app_bot.run_polling()
+    torrent_url = torrents[0].get("url")
+    title = f"{movie['title']} ({movie['year']})"
+    await query.edit_message_text(f"Sending torrent for: {title}")
+    await context.bot.send_document(chat_id=query.message.chat_id, document=torrent_url)
 
 if __name__ == '__main__':
-    Thread(target=run_web).start()
-    start_bot()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("search", search))
+    app.add_handler(CallbackQueryHandler(handle_button))
+    app.run_polling()
