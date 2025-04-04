@@ -12,87 +12,105 @@ from telegram.ext import (
     filters,
 )
 
+# Load environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+MOVIE_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
 
+# Cache for storing movie data
 MOVIE_CACHE = {}
 TORRENT_CACHE = {}
 
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 
-# Start Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send welcome message."""
     welcome_msg = (
-        "🎬 **Welcome to Torrent Downloader Bot!** 🎬\n\n"
-        "Just send me the name of a movie, and I'll fetch its **torrent links**.\n"
+        "🎬 **Welcome to Torrent Finder Bot!** 🎬\n\n"
+        "Send me the name of any movie, and I'll fetch available **torrent links** for you.\n"
         "Click on a **quality option** to download the **.torrent** file.\n\n"
-        "**Tip:** Play it on Webtor or download it using any torrent downloader."
+        "**Tip:** Play it on Webtor or use any torrent downloader like **aTorrent**."
     )
     await update.message.reply_text(welcome_msg, disable_web_page_preview=True)
 
-# Search Movie Function
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search for movies based on user query."""
     query = update.message.text.strip()
-    url = f"https://api.example.com/search?query={query}"  # Replace with your own torrent API
-
-    response = requests.get(url)
+    response = requests.get(MOVIE_API.format(query))
     
     if response.status_code != 200:
-        await update.message.reply_text("Error fetching torrent info.")
+        await update.message.reply_text("⚠️ API Error. Try again later.")
         return
     
     data = response.json()
-    torrents = data.get("torrents", [])
-
-    if not torrents:
-        await update.message.reply_text("No results found.")
+    movies = data.get("data", {}).get("movies", [])
+    
+    if not movies:
+        await update.message.reply_text("❌ No results found. Try another movie.")
         return
 
     keyboard = []
-    for torrent in torrents:
-        title = torrent["title"]
-        quality = torrent["quality"]
-        torrent_url = torrent["url"]
-        movie_id = str(torrent["id"])
-        TORRENT_CACHE[movie_id] = torrent_url
-        keyboard.append([InlineKeyboardButton(f"{title} ({quality})", callback_data=movie_id)])
+    for movie in movies:
+        movie_id = str(movie["id"])
+        MOVIE_CACHE[movie_id] = movie["torrents"]
+        title = movie["title_long"]
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"movie_{movie_id}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a movie:", reply_markup=reply_markup)
+    await update.message.reply_text("📌 **Select a movie:**", reply_markup=reply_markup)
 
-# Button Handler to send the torrent file
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button clicks."""
     query = update.callback_query
     await query.answer()
-    movie_id = query.data
+    data = query.data
 
-    torrent_url = TORRENT_CACHE.get(movie_id)
+    if data.startswith("movie_"):
+        movie_id = data.split("_")[1]
+        torrents = MOVIE_CACHE.get(movie_id, [])
 
-    if not torrent_url:
-        await query.edit_message_text("Torrent expired or not found.")
-        return
+        buttons = []
+        for i, torrent in enumerate(torrents):
+            quality = torrent["quality"]
+            torrent_url = torrent["url"]
+            callback_key = f"torrent_{movie_id}_{i}"
+            TORRENT_CACHE[callback_key] = torrent_url
+            buttons.append([InlineKeyboardButton(quality, callback_data=callback_key)])
 
-    try:
-        res = requests.get(torrent_url)
-        if res.status_code != 200:
-            await query.edit_message_text("Failed to download the file.")
+        await query.edit_message_text("🎥 **Choose quality:**", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data.startswith("torrent_"):
+        parts = data.split("_")
+        movie_id = parts[1]
+        index = int(parts[2])
+        torrent_url = TORRENT_CACHE.get(data)
+
+        if not torrent_url:
+            await query.edit_message_text("⚠️ Torrent expired or not found.")
             return
 
-        filename = f"{movie_id}.torrent"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
-            tf.write(res.content)
-            tf.flush()
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=open(tf.name, 'rb'),
-                filename=filename
-            )
-        await query.edit_message_text("Here’s your torrent file:\n\nPlay it on Webtor or download it with a torrent downloader.")
-    except Exception as e:
-        logging.error(f"Error sending torrent: {e}")
-        await query.edit_message_text("Error sending torrent file.")
+        try:
+            res = requests.get(torrent_url)
+            if res.status_code != 200:
+                await query.edit_message_text("❌ Failed to download torrent file.")
+                return
 
-# Main function
+            filename = f"{movie_id}_{index}.torrent"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
+                tf.write(res.content)
+                tf.flush()
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=open(tf.name, 'rb'),
+                    filename=filename
+                )
+            await query.edit_message_text("✅ Here’s your torrent file.\n🎬 **Play it on Webtor or use any torrent downloader like aTorrent.**")
+        except Exception as e:
+            logging.error(f"Error sending torrent: {e}")
+            await query.edit_message_text("❌ Error sending torrent file.")
+
 def main():
+    """Start the bot."""
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
