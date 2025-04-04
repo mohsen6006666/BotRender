@@ -2,123 +2,97 @@ import os
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-# Logging setup
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Get bot token from environment
+# Get bot token from environment variable
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# YTS API URL
-YTS_API_URL = "https://yts.mx/api/v2/list_movies.json"
+# Store torrent links temporarily
+torrent_map = {}
 
-# Stores torrent links temporarily
-user_torrent_selection = {}
-
-async def start(update: Update, context):
-    """Send welcome message."""
+# /start handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "🎬 **Welcome to Movie Torrent Bot!** 🎬\n\n"
-        "🔍 Just type a movie name to search.\n"
-        "⬇️ Select a movie from the list.\n"
-        "🎞 Choose the preferred torrent file.\n"
-        "📥 The `.torrent` file will be sent to you."
+        "Just type the name of any movie.\n"
+        "We’ll send you `.torrent` files directly.\n\n"
+        "To watch/download: Upload the file to [Webtor.io](https://webtor.io) or use a torrent downloader."
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
-async def search_movie(update: Update, context):
-    """Search for movies on YTS."""
+# Movie search handler
+async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
-    response = requests.get(YTS_API_URL, params={"query_term": query})
-    data = response.json()
+    res = requests.get("https://yts.mx/api/v2/list_movies.json", params={"query_term": query})
+    data = res.json()
 
-    if data["status"] != "ok" or not data["data"]["movie_count"]:
-        await update.message.reply_text("❌ No results found. Try another movie.")
+    if not data["data"]["movie_count"]:
+        await update.message.reply_text("❌ No results found.")
         return
 
     movies = data["data"]["movies"]
-    keyboard = [
-        [InlineKeyboardButton(f"{movie['title']} ({movie['year']})", callback_data=str(movie['id']))]
-        for movie in movies
+    buttons = [
+        [InlineKeyboardButton(f"{m['title']} ({m['year']})", callback_data=f"movie_{m['id']}")]
+        for m in movies
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🎥 *Select a movie:*", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-    await update.message.reply_text("🎥 **Select a movie:**", reply_markup=reply_markup, parse_mode="Markdown")
-
-async def show_torrents(update: Update, context):
-    """Show available torrents for the selected movie."""
+# Handle movie selection
+async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    movie_id = query.data
+    await query.answer()
+    movie_id = query.data.split("_")[1]
 
-    # Fetch movie details
-    movie_url = f"https://yts.mx/api/v2/movie_details.json?movie_id={movie_id}&with_torrents=true"
-    response = requests.get(movie_url)
-    data = response.json()
+    res = requests.get("https://yts.mx/api/v2/movie_details.json", params={
+        "movie_id": movie_id,
+        "with_images": True,
+        "with_cast": True
+    })
+    movie = res.json()["data"]["movie"]
 
-    if data["status"] != "ok" or "movie" not in data["data"]:
-        await query.message.reply_text("❌ No torrents found for this movie.")
-        return
-
-    movie = data["data"]["movie"]
-    torrents = sorted(movie["torrents"], key=lambda x: x["quality"], reverse=True)  # Sort by quality
-
-    keyboard = []
-    for torrent in torrents:
-        quality = torrent["quality"]
-        size = torrent["size"]
-        torrent_url = torrent["url"]
-
-        # Store torrent link for later use
-        user_torrent_selection[torrent_url] = torrent_url
-
-        keyboard.append([
-            InlineKeyboardButton(f"{quality} - {size}", callback_data=torrent_url)
-        ])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    buttons = []
+    for t in movie["torrents"]:
+        label = f"{t['quality']} - {t['size']}"
+        code = f"torrent_{t['url']}"
+        torrent_map[code] = t["url"]
+        buttons.append([InlineKeyboardButton(label, callback_data=code)])
 
     await query.message.reply_text(
-        f"🎬 **{movie['title']} ({movie['year']})**\n\n📥 Choose a torrent file:",
-        reply_markup=reply_markup,
+        f"🎬 *{movie['title']} ({movie['year']})*\n\nChoose a quality:",
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown"
     )
 
-async def send_torrent_file(update: Update, context):
-    """Send the selected torrent file to the user."""
+# Handle torrent selection
+async def send_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    torrent_url = query.data
+    await query.answer()
 
-    if torrent_url not in user_torrent_selection:
-        await query.message.reply_text("❌ Torrent file not found.")
+    code = query.data
+    url = torrent_map.get(code)
+    if not url:
+        await query.message.reply_text("❌ Torrent not found.")
         return
 
-    # Download the torrent file
-    torrent_response = requests.get(torrent_url)
-    file_name = torrent_url.split("/")[-1]
+    filename = url.split("/")[-1]
+    r = requests.get(url)
+    with open(filename, "wb") as f:
+        f.write(r.content)
 
-    with open(file_name, "wb") as file:
-        file.write(torrent_response.content)
+    await query.message.reply_document(open(filename, "rb"))
+    os.remove(filename)
 
-    # Send the .torrent file to the user
-    await query.message.reply_document(document=open(file_name, "rb"))
-
-    # Delete the file after sending
-    os.remove(file_name)
-
+# Start the bot
 def main():
-    """Start the bot."""
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
-    app.add_handler(CallbackQueryHandler(show_torrents, pattern="^\d+$"))
-    app.add_handler(CallbackQueryHandler(send_torrent_file, pattern="^https://"))
-
+    app.add_handler(CallbackQueryHandler(movie_selected, pattern="^movie_"))
+    app.add_handler(CallbackQueryHandler(send_torrent, pattern="^torrent_"))
     app.run_polling()
 
 if __name__ == "__main__":
