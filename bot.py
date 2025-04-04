@@ -8,13 +8,13 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Get your bot token from environment variable
+# Get your bot token and webhook URL from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: "https://your-app.onrender.com/webhook"
 
 # A dictionary to store short torrent IDs
 torrent_map = {}
 
-# /start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "🎬 *Welcome to Movie Torrent Bot!*\n\n"
@@ -24,7 +24,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
-# Handle movie name search
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     res = requests.get("https://yts.mx/api/v2/list_movies.json", params={"query_term": query})
@@ -41,7 +40,6 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text("🎥 *Select a movie:*", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-# Handle movie selection
 async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -67,7 +65,6 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# Handle torrent button click
 async def send_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -86,14 +83,23 @@ async def send_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_document(document=open(filename, "rb"), filename=filename)
     os.remove(filename)
 
-# Main function
+# Main function to set up webhook
+async def set_webhook(app):
+    await app.bot.set_webhook(WEBHOOK_URL + "/webhook")
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     app.add_handler(CallbackQueryHandler(movie_selected, pattern="^movie_"))
     app.add_handler(CallbackQueryHandler(send_torrent, pattern="^torrent_"))
-    app.run_polling()
+
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=WEBHOOK_URL + "/webhook"
+    )
 
 if __name__ == "__main__":
     main()
