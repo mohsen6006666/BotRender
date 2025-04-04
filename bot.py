@@ -1,68 +1,89 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
-import requests
 import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-API_URL = "https://yts.mx/api/v2/list_movies.json?query_term="
+import requests
 
-def start(update: Update, context: CallbackContext) -> None:
-    welcome_message = (
-        "Welcome to Movie Search Bot! 🎬\n\n"
-        "Just type a movie name, and I'll find the torrent for you.\n"
-        "After receiving the torrent file, upload it to webtor.io to stream/download it, or use your torrent downloader."
+# Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+# Get bot token from environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# Base URL for YTS API
+YTS_API_URL = "https://yts.mx/api/v2/list_movies.json"
+
+async def start(update: Update, context):
+    """Send a welcome message when the bot starts."""
+    welcome_text = (
+        "🎬 **Welcome to Movie Torrent Bot!** 🎬\n\n"
+        "🔍 Just type a movie name to search.\n"
+        "⬇️ Select a movie from the list.\n"
+        "🎞 Choose the preferred torrent file.\n"
+        "📥 Download and watch via **[webtor.io](https://webtor.io)** or a torrent client."
     )
-    update.message.reply_text(welcome_message)
+    await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
-def search_movie(update: Update, context: CallbackContext) -> None:
+async def search_movie(update: Update, context):
+    """Search for a movie on YTS and show results."""
     query = update.message.text.strip()
-    response = requests.get(API_URL + query)
+    response = requests.get(YTS_API_URL, params={"query_term": query})
     data = response.json()
-    
-    if data["data"]["movie_count"] == 0:
-        update.message.reply_text("No movies found. Try a different title!")
-        return
-    
-    movies = data["data"]["movies"]
-    keyboard = []
-    
-    for movie in movies:
-        keyboard.append([InlineKeyboardButton(f"{movie['title']} ({movie['year']})", callback_data=str(movie['id']))])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Select a movie:", reply_markup=reply_markup)
 
-def movie_selected(update: Update, context: CallbackContext) -> None:
+    if data["status"] != "ok" or not data["data"]["movie_count"]:
+        await update.message.reply_text("❌ No results found. Try another movie.")
+        return
+
+    movies = data["data"]["movies"]
+    keyboard = [
+        [InlineKeyboardButton(f"{movie['title']} ({movie['year']})", callback_data=str(movie['id']))]
+        for movie in movies
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("🎥 **Select a movie:**", reply_markup=reply_markup, parse_mode="Markdown")
+
+async def show_torrents(update: Update, context):
+    """Show available torrents for the selected movie."""
     query = update.callback_query
-    query.answer()
     movie_id = query.data
-    response = requests.get(API_URL + movie_id)
+
+    response = requests.get(YTS_API_URL, params={"movie_id": movie_id})
     data = response.json()
-    
-    if "movie" not in data["data"]:
-        query.message.reply_text("Sorry, I couldn't find details for this movie.")
+
+    if data["status"] != "ok" or not data["data"]["movie_count"]:
+        await query.message.reply_text("❌ No torrents found for this movie.")
         return
+
+    movie = data["data"]["movies"][0]
+    torrents = movie["torrents"]
     
-    movie = data["data"]["movie"]
-    torrents = movie.get("torrents", [])
-    
-    if not torrents:
-        query.message.reply_text("No torrents available for this movie.")
-        return
-    
-    torrent_links = "\n".join([f"[{t['quality']}]({t['url']})" for t in torrents])
-    query.message.reply_text(f"Here are the available torrents for {movie['title']}:\n{torrent_links}", parse_mode="Markdown")
+    keyboard = [
+        [InlineKeyboardButton(f"{torrent['quality']} - {torrent['size']}", url=torrent['url'])]
+        for torrent in torrents
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.message.reply_text(
+        f"🎬 **{movie['title']} ({movie['year']})**\n\n📥 Choose a torrent:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
 
 def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-    
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, search_movie))
-    dp.add_handler(CallbackQueryHandler(movie_selected))
-    
-    updater.start_polling()
-    updater.idle()
+    """Start the bot."""
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    app.add_handler(CallbackQueryHandler(show_torrents))
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
