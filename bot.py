@@ -1,95 +1,85 @@
-import os import logging import requests from flask import Flask, request from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+import os
+import logging
+import requests
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-Enable logging
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-logging.basicConfig(level=logging.INFO) logger = logging.getLogger(name)
+YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
+TORRENT_CACHE = {}
 
-Get bot token and webhook URL
+logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Set this in Render
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_msg = (
+        "Welcome to YTS Torrent Bot!\n\n"
+        "Just send me the name of any movie.\n"
+        "I'll find it on YTS and give you torrent download options.\n\n"
+        "**Tip:** After downloading, upload the .torrent file to [webtor.io](https://webtor.io) "
+        "to stream/download it easily!"
+    )
+    await update.message.reply_text(welcome_msg)
 
-A dictionary to store short torrent IDs
+async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text
+    response = requests.get(YTS_API.format(query))
+    data = response.json()
 
-torrent_map = {}
+    if not data["data"]["movies"]:
+        await update.message.reply_text("No results found.")
+        return
 
-Initialize Flask app
+    keyboard = []
+    for movie in data["data"]["movies"]:
+        movie_id = str(movie["id"])
+        title = movie["title_long"]
+        TORRENT_CACHE[movie_id] = movie["torrents"]
+        keyboard.append([InlineKeyboardButton(title, callback_data=f"movie_{movie_id}")])
 
-app = Flask(name)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select a movie:", reply_markup=reply_markup)
 
-@app.route('/') def home(): return "Bot is running!"
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-@app.route(f'/{BOT_TOKEN}', methods=['POST']) def webhook(): update = Update.de_json(request.get_json(), app.bot) app.bot.process_update(update) return "OK", 200
+    data = query.data
+    if data.startswith("movie_"):
+        movie_id = data.split("_")[1]
+        torrents = TORRENT_CACHE.get(movie_id)
 
-/start command handler
+        if not torrents:
+            await query.edit_message_text("Torrent info expired. Please search again.")
+            return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): welcome_text = ( "🎬 Welcome to Movie Torrent Bot!\n\n" "Just type any movie name.\n" "We'll show you options and send you the .torrent file directly.\n\n" "Watch/download via webtor.io or use any torrent downloader." ) await update.message.reply_text(welcome_text, parse_mode="Markdown")
+        buttons = []
+        for torrent in torrents:
+            quality = torrent["quality"]
+            url = torrent["url"]
+            buttons.append([InlineKeyboardButton(quality, callback_data=f"torrent_{url}")])
 
-Handle movie name search
+        reply_markup = InlineKeyboardMarkup(buttons)
+        await query.edit_message_text("Choose quality:", reply_markup=reply_markup)
 
-async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.message.text.strip() res = requests.get("https://yts.mx/api/v2/list_movies.json", params={"query_term": query}) data = res.json()
+    elif data.startswith("torrent_"):
+        url = data.replace("torrent_", "")
+        await query.edit_message_text("Here’s your torrent file:")
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=url)
 
-if not data["data"]["movie_count"]:
-    await update.message.reply_text("❌ No movies found.")
-    return
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-movies = data["data"]["movies"]
-buttons = [
-    [InlineKeyboardButton(f"{m['title']} ({m['year']})", callback_data=f"movie_{m['id']}")]
-    for m in movies
-]
-await update.message.reply_text("🎥 *Select a movie:*", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-Handle movie selection
+    # Use webhook method to avoid polling conflicts
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=os.environ.get("WEBHOOK_URL")
+    )
 
-async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() movie_id = query.data.split("_")[1]
-
-res = requests.get("https://yts.mx/api/v2/movie_details.json", params={
-    "movie_id": movie_id,
-    "with_images": False,
-    "with_cast": False
-})
-movie = res.json()["data"]["movie"]
-
-buttons = []
-for t in movie["torrents"]:
-    label = f"{t['quality']} - {t['size']}"
-    short_id = str(len(torrent_map))
-    torrent_map[short_id] = t["url"]
-    buttons.append([InlineKeyboardButton(label, callback_data=f"torrent_{short_id}")])
-
-await query.message.reply_text(
-    f"🎬 *{movie['title']} ({movie['year']})*\n\nChoose a quality:",
-    reply_markup=InlineKeyboardMarkup(buttons),
-    parse_mode="Markdown"
-)
-
-Handle torrent button click
-
-async def send_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() short_id = query.data.split("_")[1] url = torrent_map.get(short_id)
-
-if not url:
-    await query.message.reply_text("❌ Torrent not found.")
-    return
-
-filename = url.split("/")[-1]
-response = requests.get(url)
-with open(filename, "wb") as f:
-    f.write(response.content)
-
-await query.message.reply_document(document=open(filename, "rb"), filename=filename)
-os.remove(filename)
-
-Main function
-
-def main(): global app app.bot = Application.builder().token(BOT_TOKEN).build() app.bot.add_handler(CommandHandler("start", start)) app.bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie)) app.bot.add_handler(CallbackQueryHandler(movie_selected, pattern="^movie_")) app.bot.add_handler(CallbackQueryHandler(send_torrent, pattern="^torrent_"))
-
-# Set webhook
-app.bot.initialize()
-app.bot.bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
-
-# Start Flask server
-port = int(os.environ.get("PORT", 5000))
-app.run(host="0.0.0.0", port=port)
-
-if name == "main": main()
-
+if __name__ == "__main__":
+    main()
