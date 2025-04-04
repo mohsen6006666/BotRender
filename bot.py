@@ -25,7 +25,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎬 **Welcome to Torrent Finder Bot!** 🎬\n\n"
         "Send me the name of any movie, and I'll fetch available **torrent links** for you.\n"
         "Click on a **quality option** to download the **.torrent** file.\n\n"
-        "**Tip:** Play it on [Webtor](https://webtor.net) or use any torrent downloader like **aTorrent**."
+        "**Tip:** Play it on [Webtor](https://webtor.io) or use any torrent downloader like **aTorrent**."
     )
     await update.message.reply_text(welcome_msg, disable_web_page_preview=True, parse_mode="Markdown")
 
