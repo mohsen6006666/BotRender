@@ -1,74 +1,68 @@
-import os
-import logging
-import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes
-)
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, CallbackQueryHandler
+import requests
+import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-logging.basicConfig(level=logging.INFO)
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_URL = "https://yts.mx/api/v2/list_movies.json?query_term="
 
-# Store search results in memory for each user
-user_search_data = {}
+def start(update: Update, context: CallbackContext) -> None:
+    welcome_message = (
+        "Welcome to Movie Search Bot! 🎬\n\n"
+        "Just type a movie name, and I'll find the torrent for you.\n"
+        "After receiving the torrent file, upload it to webtor.io to stream/download it, or use your torrent downloader."
+    )
+    update.message.reply_text(welcome_message)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Use /search <movie name> to find a YTS torrent.")
-
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args)
-    if not query:
-        await update.message.reply_text("Please provide a movie name. Example: /search Interstellar")
+def search_movie(update: Update, context: CallbackContext) -> None:
+    query = update.message.text.strip()
+    response = requests.get(API_URL + query)
+    data = response.json()
+    
+    if data["data"]["movie_count"] == 0:
+        update.message.reply_text("No movies found. Try a different title!")
         return
-
-    url = f"https://yts.mx/api/v2/list_movies.json?query_term={query}"
-    response = requests.get(url).json()
-
-    movies = response.get("data", {}).get("movies", [])
-
-    if not movies:
-        await update.message.reply_text("No movies found.")
-        return
-
-    # Save movie data to handle button clicks
-    user_id = update.effective_user.id
-    user_search_data[user_id] = movies
-
+    
+    movies = data["data"]["movies"]
     keyboard = []
-    for i, movie in enumerate(movies):
-        title = f"{movie['title']} ({movie['year']})"
-        keyboard.append([InlineKeyboardButton(title, callback_data=str(i))])
-
+    
+    for movie in movies:
+        keyboard.append([InlineKeyboardButton(f"{movie['title']} ({movie['year']})", callback_data=str(movie['id']))])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a movie:", reply_markup=reply_markup)
+    update.message.reply_text("Select a movie:", reply_markup=reply_markup)
 
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def movie_selected(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
-    await query.answer()
-
-    user_id = query.from_user.id
-    movies = user_search_data.get(user_id, [])
-
-    index = int(query.data)
-    if index >= len(movies):
-        await query.edit_message_text("Invalid selection.")
+    query.answer()
+    movie_id = query.data
+    response = requests.get(API_URL + movie_id)
+    data = response.json()
+    
+    if "movie" not in data["data"]:
+        query.message.reply_text("Sorry, I couldn't find details for this movie.")
         return
-
-    movie = movies[index]
+    
+    movie = data["data"]["movie"]
     torrents = movie.get("torrents", [])
+    
     if not torrents:
-        await query.edit_message_text("No torrents found for this movie.")
+        query.message.reply_text("No torrents available for this movie.")
         return
+    
+    torrent_links = "\n".join([f"[{t['quality']}]({t['url']})" for t in torrents])
+    query.message.reply_text(f"Here are the available torrents for {movie['title']}:\n{torrent_links}", parse_mode="Markdown")
 
-    torrent_url = torrents[0].get("url")
-    title = f"{movie['title']} ({movie['year']})"
-    await query.edit_message_text(f"Sending torrent for: {title}")
-    await context.bot.send_document(chat_id=query.message.chat_id, document=torrent_url)
+def main():
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
+    
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, search_movie))
+    dp.add_handler(CallbackQueryHandler(movie_selected))
+    
+    updater.start_polling()
+    updater.idle()
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("search", search))
-    app.add_handler(CallbackQueryHandler(handle_button))
-    app.run_polling()
+if __name__ == "__main__":
+    main()
