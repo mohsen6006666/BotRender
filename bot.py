@@ -92,7 +92,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=update.effective_chat.id,
                     document=open(tf.name, 'rb'),
                     filename="movie.torrent",
-                    caption="Play it on [Webtor](https://webtor.net) or download using **aTorrent**.",
+                    caption="Play it on [Webtor](https://webtor.io) or download using **aTorrent**.",
                     parse_mode="Markdown"
                 )
             await query.edit_message_text("Here’s your torrent file:")
