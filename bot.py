@@ -13,74 +13,69 @@ from telegram.ext import (
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_CHANNEL_ID = -1002699774923  # Replace with your private channel ID
 YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
 
+# Caches
 MOVIE_CACHE = {}
 TORRENT_CACHE = {}
-LOGGED_USERS = set()
+LOGGED_USERS = set()  # Keeps track of users already logged
 
-# Optional: Telegram Channel ID for logs
-LOG_CHANNEL_ID = -1002699774923  # Replace with your private channel ID
-
+# Logging
 logging.basicConfig(level=logging.INFO)
 
+# /start handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user_name = update.effective_user.full_name
+
+    # Only send log once per user
     if user_id not in LOGGED_USERS:
         LOGGED_USERS.add(user_id)
-        user = update.effective_user
-        await context.bot.send_message(
-            chat_id=LOG_CHANNEL_ID,
-            text=f"New user: {user.full_name} (ID: {user.id})"
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHANNEL_ID,
+                text=f"👤 New User Started: {user_name} (ID: {user_id})"
+            )
+        except Exception as e:
+            logging.warning(f"Failed to log user: {e}")
 
     welcome_msg = (
-        "🎬 **Welcome to Torrent Finder Bot!** 🎬\n\n"
-        "Send me the name of any movie, and I'll fetch available **torrent links** for you.\n"
-        "Click on a **quality option** to download the **.torrent** file.\n\n"
-        "**Tip:** Play it on [Webtor](https://webtor.io) or use any torrent downloader like **aTorrent**."
+        "🎬 *Welcome to Movie Search Bot!*\n\n"
+        "Send me the name of any movie, and I’ll fetch available *torrent files* for you.\n"
+        "Tap a movie, then pick a *quality* to download the `.torrent` file.\n\n"
+        "_Use it with Webtor.io or any torrent app._"
     )
-    await update.message.reply_text(welcome_msg, disable_web_page_preview=True, parse_mode="Markdown")
+    await update.message.reply_text(welcome_msg, parse_mode="Markdown")
 
+# Handle movie name search
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     response = requests.get(YTS_API.format(query))
-    
+
     if response.status_code != 200:
-        await update.message.reply_text("API error. Try again later.")
+        await update.message.reply_text("Error fetching from API. Try again later.")
         return
-    
+
     data = response.json()
     movies = data.get("data", {}).get("movies", [])
-    
+
     if not movies:
-        await update.message.reply_text("No results found.")
+        await update.message.reply_text("No movies found.")
         return
 
     keyboard = []
-    added_ids = set()
-
     for movie in movies:
         movie_id = str(movie["id"])
-        if movie_id in added_ids:
-            continue
-        added_ids.add(movie_id)
-
+        if movie_id in MOVIE_CACHE:
+            continue  # avoid duplicates
+        MOVIE_CACHE[movie_id] = movie["torrents"]
         title = movie["title_long"]
-        MOVIE_CACHE[movie_id] = movie.get("torrents", [])
-
-        if not MOVIE_CACHE[movie_id]:
-            continue
-
         keyboard.append([InlineKeyboardButton(title, callback_data=f"movie_{movie_id}")])
 
-    if not keyboard:
-        await update.message.reply_text("No torrents found for this movie.")
-        return
+    await update.message.reply_text("🎥 *Select a movie:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Choose a movie:", reply_markup=reply_markup)
-
+# Handle button presses
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -101,7 +96,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TORRENT_CACHE[callback_key] = torrent["url"]
             buttons.append([InlineKeyboardButton(quality, callback_data=callback_key)])
 
-        await query.edit_message_text("Select a quality:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.edit_message_text("🧲 *Choose quality:*", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
     elif data.startswith("torrent_"):
         torrent_url = TORRENT_CACHE.get(data)
@@ -113,25 +108,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             res = requests.get(torrent_url)
             if res.status_code != 200:
-                await query.edit_message_text("Failed to download the file.")
+                await query.edit_message_text("Failed to fetch torrent file.")
                 return
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
                 tf.write(res.content)
                 tf.flush()
-                with open(tf.name, 'rb') as f:
-                    await context.bot.send_document(
-                        chat_id=update.effective_chat.id,
-                        document=f,
-                        filename="movie.torrent",
-                        caption="Use [Webtor](https://webtor.io) or aTorrent to stream/download.",
-                        parse_mode="Markdown"
-                    )
-            await query.edit_message_text("Here’s your torrent file:")
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=open(tf.name, 'rb'),
+                    filename="movie.torrent",
+                    caption="Here's your torrent file. You can use it with Webtor.io or any torrent downloader.",
+                )
+            await query.edit_message_text("✅ Torrent file sent!")
         except Exception as e:
             logging.error(f"Error sending torrent: {e}")
             await query.edit_message_text("Error sending the file.")
 
+# Run bot
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
