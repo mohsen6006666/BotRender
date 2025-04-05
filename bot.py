@@ -4,7 +4,11 @@ import requests
 import tempfile
 from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,24 +18,24 @@ from telegram.ext import (
     filters
 )
 
-from user_logger import log_user  # Import the logger function
+from user_logger import log_user
 
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Logger setup
+# Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_user(update, context)  # Log the user to your private channel
+    log_user(update, context)  # Log the user
 
     await update.message.reply_text(
         "**🎬 Welcome to Movie Magnet Bot!**\n\n"
         "Search any movie name and get the `.torrent` file instantly.\n\n"
-        "*Tip:* Upload the `.torrent` file to `webtor.io` (copy-paste, not a link) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
+        "*Tip:* Upload the `.torrent` file to [webtor](https://webtor.io) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -110,10 +114,10 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, hash_value, movie_name = query.data.split("_", 2)
-    magnet_link = f"https://yts.mx/torrent/download/{hash_value}"
+    torrent_url = f"https://yts.mx/torrent/download/{hash_value}"
 
     try:
-        torrent_response = requests.get(magnet_link)
+        torrent_response = requests.get(torrent_url)
         if torrent_response.status_code == 200:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
                 tf.write(torrent_response.content)
@@ -122,20 +126,15 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=query.message.chat_id,
                     document=open(tf.name, 'rb'),
                     filename=f"{movie_name}.torrent",
-                    caption="Play it on `webtor.io` or open with a torrent app.",
+                    caption="Play it on [webtor](https://webtor.io) or open with a torrent app.",
                     parse_mode="Markdown",
-                    disable_web_page_preview=True
+                    disable_content_type_detection=True
                 )
         else:
             await query.edit_message_text("❌ Torrent expired or not found.")
     except Exception as e:
         logger.error(f"Error sending torrent: {e}")
         await query.edit_message_text("⚠️ Error sending the file.")
-
-
-# Global error handler
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
 
 def main():
@@ -145,8 +144,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     app.add_handler(CallbackQueryHandler(movie_selected, pattern="^movie_"))
     app.add_handler(CallbackQueryHandler(quality_selected, pattern="^quality_"))
-
-    app.add_error_handler(error_handler)  # Register error handler
 
     logger.info("Bot started.")
     app.run_polling()
