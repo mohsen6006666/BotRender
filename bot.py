@@ -4,29 +4,38 @@ import requests
 import tempfile
 from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters
+)
 
-from user_logger import log_user  # Import log_user
+from user_logger import log_user  # Importing from user_logger.py
 
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Logging
+# Logger setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await log_user(update, context)  # Log the user on /start
+    await log_user(update, context)  # Log user to your private channel
 
     await update.message.reply_text(
         "**🎬 Welcome to Movie Magnet Bot!**\n\n"
         "Search any movie name and get the `.torrent` file instantly.\n\n"
-        "*Tip:* Upload the `.torrent` file to [webtor.io](https://webtor.io) or use "
-        "[aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) "
-        "to stream/download.",
+        "*Tip:* Upload the `.torrent` file to `webtor.io` (just text, not link) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -46,9 +55,9 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         buttons = []
         for movie in movies[:10]:
-            title = movie["title"]
-            year = movie["year"]
-            movie_id = movie["id"]
+            title = movie.get("title")
+            year = movie.get("year")
+            movie_id = movie.get("id")
             buttons.append([
                 InlineKeyboardButton(
                     f"{title} ({year})",
@@ -73,31 +82,39 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = f"https://yts.mx/api/v2/movie_details.json?movie_id={movie_id}&with_torrents=true"
     try:
         response = requests.get(url).json()
-        torrents = response["data"]["movie"]["torrents"]
-        title = response["data"]["movie"]["title"]
+        movie_data = response.get("data", {}).get("movie")
+
+        if not movie_data:
+            await query.edit_message_text("❌ Movie details not found.")
+            return
+
+        title = movie_data.get("title", "Unknown Title")
+        torrents = movie_data.get("torrents", [])
+
+        if not torrents:
+            await query.edit_message_text(f"❌ No torrents found for *{title}*.", parse_mode="Markdown")
+            return
 
         buttons = []
         for t in torrents:
-            quality = t["quality"]
-            hash_value = t["hash"]
-            buttons.append([
-                InlineKeyboardButton(
-                    f"{quality}",
-                    callback_data=f"quality_{hash_value}_{title.replace(' ', '_')}"
-                )
-            ])
-
-        if not buttons:
-            await query.edit_message_text("❌ No torrents available.")
-            return
+            quality = t.get("quality")
+            hash_value = t.get("hash")
+            if quality and hash_value:
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{quality}",
+                        callback_data=f"quality_{hash_value}_{title.replace(' ', '_')}"
+                    )
+                ])
 
         await query.edit_message_text(
             f"🎯 Choose quality for *{title}*:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
+
     except Exception as e:
-        logger.error(f"Error selecting movie: {e}")
+        logger.error(f"Error in movie_selected: {e}")
         await query.edit_message_text("⚠️ Error getting movie info.")
 
 
@@ -105,23 +122,24 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, hash_value, movie_name = query.data.split("_", 2)
-    torrent_url = f"https://yts.mx/torrent/download/{hash_value}"
+    magnet_link = f"https://yts.mx/torrent/download/{hash_value}"
 
     try:
-        response = requests.get(torrent_url)
-        if response.status_code == 200:
+        torrent_response = requests.get(magnet_link)
+        if torrent_response.status_code == 200:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
-                tf.write(response.content)
+                tf.write(torrent_response.content)
                 tf.flush()
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
-                    document=open(tf.name, "rb"),
+                    document=open(tf.name, 'rb'),
                     filename=f"{movie_name}.torrent",
-                    caption="Use with aTorrent or upload to [webtor.io](https://webtor.io)",
-                    parse_mode="Markdown"
+                    caption="Play it on [Webtor](https://webtor.io) or open with a torrent app.",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
                 )
         else:
-            await query.edit_message_text("❌ Torrent not found or expired.")
+            await query.edit_message_text("❌ Torrent expired or not found.")
     except Exception as e:
         logger.error(f"Error sending torrent: {e}")
         await query.edit_message_text("⚠️ Error sending the file.")
