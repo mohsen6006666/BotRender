@@ -9,6 +9,7 @@ def log_user(update, context):
     log_channel_id = -1002699774923  # Your private channel ID
 
     if user_id not in logged_users:
+        print(f"Logging user: {name} ({user_id})")  # Optional: print to console
         logged_users.add(user_id)
 
         try:
@@ -17,4 +18,4 @@ def log_user(update, context):
                 text=f"New user: {name} (ID: {user_id})"
             )
         except Exception as e:
-            print(f"Failed to log user: {e}")
+            print(f"Error sending log message: {e}")
