@@ -11,9 +11,10 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from user_logger import log_user
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
+CHANNEL_ID = -1002699774923  # Replace with your private channel ID
 
 MOVIE_CACHE = {}
 TORRENT_CACHE = {}
@@ -30,7 +31,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, disable_web_page_preview=True, parse_mode="Markdown")
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_user(update, context)
     query = update.message.text.strip()
     response = requests.get(YTS_API.format(query))
     
@@ -68,13 +68,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, torrent in enumerate(torrents):
             quality = torrent["quality"]
             callback_key = f"torrent_{movie_id}_{i}"
-            TORRENT_CACHE[callback_key] = torrent["url"]
+            TORRENT_CACHE[callback_key] = (torrent["url"], quality)
             buttons.append([InlineKeyboardButton(quality, callback_data=callback_key)])
 
         await query.edit_message_text("Choose quality:", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("torrent_"):
-        torrent_url = TORRENT_CACHE.get(data)
+        torrent_url, quality = TORRENT_CACHE.get(data, (None, None))
 
         if not torrent_url:
             await query.edit_message_text("Torrent expired or not found.")
@@ -96,7 +96,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     caption="Play it on [Webtor](https://webtor.io) or download using **aTorrent**.",
                     parse_mode="Markdown"
                 )
+
             await query.edit_message_text("Here’s your torrent file:")
+
+            # Log to your private channel
+            user = update.effective_user
+            log_text = f"User [{user.first_name}](tg://user?id={user.id}) downloaded a **{quality}** torrent."
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=log_text, parse_mode="Markdown")
+
         except Exception as e:
             logging.error(f"Error sending torrent: {e}")
             await query.edit_message_text("Error sending the file.")
