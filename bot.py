@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import tempfile
+import uuid
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,6 +17,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term={}"
 
 logging.basicConfig(level=logging.INFO)
+
+TORRENT_CACHE = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
@@ -44,13 +47,18 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for movie in movies:
         title = movie["title_long"]
-        for i, torrent in enumerate(movie["torrents"]):
-            callback_data = f"dl|{torrent['url']}|{title}|{torrent['quality']}"
-            button_text = f"{title} - {torrent['quality']}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+        for torrent in movie["torrents"]:
+            unique_key = str(uuid.uuid4())[:8]
+            TORRENT_CACHE[unique_key] = {
+                "url": torrent["url"],
+                "title": title,
+                "quality": torrent["quality"]
+            }
+            button_text = f"{title} [{torrent['quality']}]"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"dl|{unique_key}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Choose a torrent quality:", reply_markup=reply_markup)
+    await update.message.reply_text("Choose a torrent:", reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -58,9 +66,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("dl|"):
+        key = data.split("|")[1]
+        info = TORRENT_CACHE.get(key)
+
+        if not info:
+            await query.edit_message_text("Link expired. Please search again.")
+            return
+
         try:
-            _, url, title, quality = data.split("|", 3)
-            res = requests.get(url)
+            res = requests.get(info["url"])
             if res.status_code != 200:
                 await query.edit_message_text("Failed to download torrent.")
                 return
@@ -71,11 +85,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=open(tf.name, 'rb'),
-                    filename=f"{title} [{quality}].torrent",
+                    filename=f"{info['title']} [{info['quality']}].torrent",
                     caption="Play it on [Webtor](https://webtor.io) or use a torrent app.",
                     parse_mode="Markdown"
                 )
-            await query.edit_message_text("Here's your torrent file:")
+            await query.edit_message_text("Here’s your torrent file:")
         except Exception as e:
             logging.error(f"Download error: {e}")
             await query.edit_message_text("Error sending file.")
