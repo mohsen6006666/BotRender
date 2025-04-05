@@ -6,7 +6,7 @@ async def log_user(update, context):
     user = update.effective_user
     user_id = user.id
     name = user.full_name
-    log_channel_id = -1002699774923  # Your private log channel ID
+    log_channel_id = -1002699774923  # Your private channel ID
 
     if user_id not in logged_users:
         logged_users.add(user_id)
