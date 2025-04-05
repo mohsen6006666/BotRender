@@ -33,7 +33,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "**🎬 Welcome to Movie Magnet Bot!**\n\n"
         "Search any movie name and get the `.torrent` file instantly.\n\n"
-        "*Tip:* Upload the `.torrent` file to `webtor.io` (just copy-paste it) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
+        "*Tip:* Upload the `.torrent` file to `webtor.io` or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -90,11 +90,10 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for t in torrents:
             quality = t["quality"]
             hash_value = t["hash"]
+            # Use safe separator
+            callback_data = f"quality|||{hash_value}|||{title.replace(' ', '_')}"
             buttons.append([
-                InlineKeyboardButton(
-                    f"{quality}",
-                    callback_data=f"quality_{hash_value}_{title.replace(' ', '_')}"
-                )
+                InlineKeyboardButton(f"{quality}", callback_data=callback_data)
             ])
 
         await query.edit_message_text(
@@ -109,7 +108,13 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, hash_value, movie_name = query.data.split("_", 2)
+
+    parts = query.data.split("|||")
+    if len(parts) != 3:
+        await query.edit_message_text("⚠️ Error parsing selection.")
+        return
+
+    _, hash_value, movie_name = parts
     magnet_link = f"https://yts.mx/torrent/download/{hash_value}"
 
     try:
@@ -118,10 +123,12 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
                 tf.write(response.content)
                 tf.flush()
+                # Sanitize filename
+                safe_name = movie_name.replace("/", "_").replace(":", "_")
                 await context.bot.send_document(
                     chat_id=query.message.chat_id,
                     document=open(tf.name, 'rb'),
-                    filename=f"{movie_name}.torrent",
+                    filename=f"{safe_name}.torrent",
                     caption="Here is your torrent file.\n\nUse `webtor.io` or [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
                     parse_mode="Markdown",
                     disable_web_page_preview=True
@@ -138,7 +145,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
     app.add_handler(CallbackQueryHandler(movie_selected, pattern="^movie_"))
-    app.add_handler(CallbackQueryHandler(quality_selected, pattern="^quality_"))
+    app.add_handler(CallbackQueryHandler(quality_selected, pattern="^quality"))
 
     logger.info("Bot started.")
     app.run_polling()
