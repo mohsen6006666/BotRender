@@ -30,6 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, disable_web_page_preview=True, parse_mode="Markdown")
 
 async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_user(update, context)
     query = update.message.text.strip()
     response = requests.get(YTS_API.format(query))
     
