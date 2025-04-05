@@ -3,39 +3,26 @@ import logging
 import requests
 import tempfile
 from dotenv import load_dotenv
-
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters
-)
-
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from user_logger import log_user
 
-# Load environment variables
+# Load .env if running locally
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Logger
+# Enable logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    log_user(update, context)  # Log the user
+    log_user(update, context)
 
     await update.message.reply_text(
         "**🎬 Welcome to Movie Magnet Bot!**\n\n"
         "Search any movie name and get the `.torrent` file instantly.\n\n"
-        "*Tip:* Upload the `.torrent` file to [webtor](https://webtor.io) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
+        "*Tip:* Upload the `.torrent` file to [webtor.io](https://webtor.io) or use [aTorrent](https://play.google.com/store/apps/details?id=com.utorrent.client) to stream/download.",
         parse_mode="Markdown",
         disable_web_page_preview=True
     )
@@ -58,12 +45,7 @@ async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = movie["title"]
             year = movie["year"]
             movie_id = movie["id"]
-            buttons.append([
-                InlineKeyboardButton(
-                    f"{title} ({year})",
-                    callback_data=f"movie_{movie_id}"
-                )
-            ])
+            buttons.append([InlineKeyboardButton(f"{title} ({year})", callback_data=f"movie_{movie_id}")])
 
         await update.message.reply_text(
             "🎥 Select a movie:",
@@ -96,10 +78,6 @@ async def movie_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             ])
 
-        if not buttons:
-            await query.edit_message_text("❌ No torrents available.")
-            return
-
         await query.edit_message_text(
             f"🎯 Choose quality for *{title}*:",
             parse_mode="Markdown",
@@ -114,10 +92,10 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     _, hash_value, movie_name = query.data.split("_", 2)
-    torrent_url = f"https://yts.mx/torrent/download/{hash_value}"
+    magnet_link = f"https://yts.mx/torrent/download/{hash_value}"
 
     try:
-        torrent_response = requests.get(torrent_url)
+        torrent_response = requests.get(magnet_link)
         if torrent_response.status_code == 200:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
                 tf.write(torrent_response.content)
@@ -126,9 +104,9 @@ async def quality_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=query.message.chat_id,
                     document=open(tf.name, 'rb'),
                     filename=f"{movie_name}.torrent",
-                    caption="Play it on [webtor](https://webtor.io) or open with a torrent app.",
+                    caption="Use [webtor.io](https://webtor.io) or aTorrent to stream/download.",
                     parse_mode="Markdown",
-                    disable_content_type_detection=True
+                    disable_web_page_preview=True
                 )
         else:
             await query.edit_message_text("❌ Torrent expired or not found.")
