@@ -1,18 +1,14 @@
-logged_users = set()
+from telegram import User
+from telegram.ext import Application
 
-async def log_user(update, context):
-    user = update.effective_user
-    user_id = user.id
-    name = user.full_name
-    log_channel_id = -1002699774923  # Your private channel ID
+# Replace this with your channel ID
+LOG_CHANNEL_ID = -1002699774923
 
-    if user_id not in logged_users:
-        logged_users.add(user_id)
-
-        try:
-            await context.bot.send_message(
-                chat_id=log_channel_id,
-                text=f"🆕 New user: {name} (ID: {user_id})"
-            )
-        except Exception as e:
-            print(f"Error sending log message: {e}")
+# Log function
+async def log_user_start(user: User):
+    msg = f"**New User Started Bot**\n\nName: {user.full_name}\nUsername: @{user.username}\nUser ID: `{user.id}`"
+    
+    # Import app instance safely (if needed)
+    from bot import BOT_TOKEN
+    app = Application.builder().token(BOT_TOKEN).build()
+    await app.bot.send_message(chat_id=LOG_CHANNEL_ID, text=msg, parse_mode='Markdown')
