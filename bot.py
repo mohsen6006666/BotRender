@@ -1,68 +1,102 @@
-import os import logging import tempfile import requests from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup from telegram.ext import ( Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters )
+import os
+import logging
+import tempfile
+import requests
 
-TOKEN = os.getenv("BOT_TOKEN") LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", -1001234567890))  # Replace with your channel ID API_URL = "https://yts.mx/api/v2/list_movies.json?query_term={}"
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
-logged_users = set()
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO) logger = logging.getLogger(name)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+LOG_CHANNEL_ID = -1001234567890  # Replace with your private channel ID
+logged_users = set()  # In-memory tracking
 
-START HANDLER
+YTS_API = "https://yts.mx/api/v2/list_movies.json"
+TORRENT_API = "https://yts.mx/api/v2/movie_details.json?with_torrents=true"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): user = update.effective_user if user.id not in logged_users: logged_users.add(user.id) await context.bot.send_message( chat_id=LOG_CHANNEL_ID, text=f"New user started bot: {user.full_name} (@{user.username}, ID: {user.id})" ) await update.message.reply_text("Send me the name of a movie to search for torrents.")
+# /start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in logged_users:
+        logged_users.add(user_id)
+        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"New user started bot: {update.effective_user.mention_html()}", parse_mode="HTML")
 
-SEARCH HANDLER
+    await update.message.reply_text("Send me a movie name to search torrents.")
 
-async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.message.text response = requests.get(API_URL.format(query))
-
-try:
+# Handle movie name
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text
+    response = requests.get(YTS_API, params={"query_term": query})
     data = response.json()
-    movies = data['data']['movies']
-    if not movies:
-        raise Exception("No movies found")
 
-    for movie in movies[:3]:  # Limit to top 3 results
-        title = movie['title']
-        torrents = movie['torrents']
-        buttons = []
+    if data.get("data", {}).get("movie_count", 0) == 0:
+        await update.message.reply_text("No movies found.")
+        return
 
-        for t in torrents:
-            btn_text = f"{t['quality']} - {t['type']}"
-            callback_data = f"{t['url']}|{title}"
-            buttons.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
+    movies = data["data"]["movies"][:5]  # Max 5 options
+    buttons = [
+        [InlineKeyboardButton(movie["title"], callback_data=str(movie["id"]))]
+        for movie in movies
+    ]
 
-        markup = InlineKeyboardMarkup(buttons)
-        await update.message.reply_text(f"Select quality for: {title}", reply_markup=markup)
+    await update.message.reply_text("🎥 Select a movie:", reply_markup=InlineKeyboardMarkup(buttons))
 
-except Exception as e:
-    logger.error(f"Search failed: {e}")
-    await update.message.reply_text("No torrents found for this movie.")
+# Handle movie selection
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-CALLBACK HANDLER
+    movie_id = query.data
+    response = requests.get(TORRENT_API, params={"movie_id": movie_id})
+    data = response.json()
 
-async def download_torrent(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer() url, title = query.data.split("|", 1)
+    torrents = data.get("data", {}).get("movie", {}).get("torrents", [])
 
-try:
-    response = requests.get(url)
-    if response.status_code != 200:
-        raise Exception("Torrent file download failed")
+    if not torrents:
+        await query.edit_message_text("Torrent expired or not found.")
+        return
 
-    with tempfile.NamedTemporaryFile(delete=False) as tf:
-        tf.write(response.content)
-        tf_path = tf.name
+    for torrent in torrents:
+        magnet_url = torrent["url"]
+        try:
+            torrent_file = requests.get(magnet_url)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
+                tf.write(torrent_file.content)
+                tf.flush()
+                tf.seek(0)
 
-    await context.bot.send_document(
-        chat_id=query.message.chat_id,
-        document=open(tf_path, 'rb'),
-        filename=f"{title}.torrent",
-        caption=f"Play it on [Webtor](https://webtor.io) or download using **aTorrent**.",
-        parse_mode="Markdown"
-    )
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=open(tf.name, "rb"),
+                    filename="movie.torrent",
+                    caption="Use [Webtor.io](https://webtor.io) to stream or any torrent client to download.",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error(f"Error sending torrent: {e}")
+            await query.edit_message_text("Error sending the file.")
+        break  # send only one torrent
 
-except Exception as e:
-    logger.error(f"Error sending torrent: {e}")
-    await query.edit_message_text("Torrent expired or not found.")
+# Main
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
 
-MAIN
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-if name == 'main': app = Application.builder().token(TOKEN).build() app.add_handler(CommandHandler("start", start)) app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie)) app.add_handler(CallbackQueryHandler(download_torrent)) logger.info("Bot started...") app.run_polling()
+    print("Bot running...")
+    app.run_polling()
 
+if __name__ == "__main__":
+    main()
