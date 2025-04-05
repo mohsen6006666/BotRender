@@ -1,127 +1,66 @@
-import os
-import logging
-import tempfile
-import requests
+import os import logging import requests from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup from telegram.ext import ( Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters )
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+BOT_TOKEN = os.environ.get("BOT_TOKEN") LOG_CHANNEL_ID = -1002699774923 logged_users = set()
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-LOG_CHANNEL_ID = -1002699774923
-logged_users = set()
+YTS_API = "https://yts.mx/api/v2/list_movies.json?query_term="
 
-YTS_API = "https://yts.mx/api/v2/list_movies.json"
-MOVIE_DETAILS_API = "https://yts.mx/api/v2/movie_details.json"
+/start command
 
-# /start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+def get_start_message(): return ( "Hey! Just send me a movie name and I'll try to fetch the available torrent files for you.\n\n" "You can download them or play using Webtor.\n\n" "Example: Oppenheimer or John Wick" )
 
-    if user.id not in logged_users:
-        logged_users.add(user.id)
-        await context.bot.send_message(
-            chat_id=LOG_CHANNEL_ID,
-            text=f"New user: {user.mention_html()} (ID: {user.id})",
-            parse_mode="HTML"
-        )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE): user_id = update.effective_user.id if user_id not in logged_users: await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"New user started: {update.effective_user.full_name} (@{update.effective_user.username})") logged_users.add(user_id) await update.message.reply_text(get_start_message(), parse_mode="Markdown", disable_web_page_preview=True)
 
-    await update.message.reply_text(
-        "**🎬 Welcome to Movie Torrent Bot!**\n\n"
-        "Type any movie name to get torrent download.\n"
-        "Example: *John Wick*, *Inception*, *Fight Club*\n\n"
-        "▶️ Play online: [Webtor.io](https://webtor.io)\n"
-        "⬇️ Use Flud / aTorrent to download.",
-        parse_mode="Markdown",
-        disable_web_page_preview=True
-    )
+Search handler
 
-# Search handler
-async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
-    response = requests.get(YTS_API, params={"query_term": query})
-    data = response.json()
+async def search_movie(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.message.text.strip() response = requests.get(YTS_API + query) data = response.json()
 
-    movies = data.get("data", {}).get("movies", [])
-    if not movies:
-        await update.message.reply_text("❌ No movies found. Try again.")
-        return
+if data['status'] != 'ok' or not data['data']['movies']:
+    await update.message.reply_text("No movies found. Try another title.")
+    return
 
-    buttons = [
-        [InlineKeyboardButton(f"{m['title']} ({m['year']})", callback_data=f"movie_{m['id']}")]
-        for m in movies[:5]
-    ]
+buttons = []
+for movie in data['data']['movies'][:10]:
+    title = movie['title']
+    year = movie['year']
+    movie_id = movie['id']
+    buttons.append([InlineKeyboardButton(f"{title} ({year})", callback_data=f"movie_{movie_id}")])
 
-    await update.message.reply_text("🎥 Select a movie:", reply_markup=InlineKeyboardMarkup(buttons))
+reply_markup = InlineKeyboardMarkup(buttons)
+await update.message.reply_text("🎥 Select a movie:", reply_markup=reply_markup)
 
-# Button click handler
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
+Quality selection
 
-    if data.startswith("movie_"):
-        movie_id = data.split("_")[1]
-        response = requests.get(MOVIE_DETAILS_API, params={"movie_id": movie_id, "with_images": True, "with_cast": True})
-        movie = response.json().get("data", {}).get("movie", {})
-        torrents = movie.get("torrents", [])
+async def movie_callback(update: Update, context: ContextTypes.DEFAULT_TYPE): query = update.callback_query await query.answer()
 
-        if not torrents:
-            await query.edit_message_text("❌ Torrent not available for this movie.")
-            return
+movie_id = query.data.split("_")[1]
+response = requests.get(f"https://yts.mx/api/v2/movie_details.json?movie_id={movie_id}&with_torrents=true")
+data = response.json()
 
-        quality_buttons = []
-        for t in torrents:
-            quality = t["quality"]
-            size = t["size"]
-            url = t["url"]
-            quality_buttons.append([
-                InlineKeyboardButton(f"{quality} - {size}", callback_data=f"torrent_{url}")
-            ])
+if data['status'] != 'ok' or not data['data']['movie']['torrents']:
+    await query.edit_message_text("Torrent expired or not found.")
+    return
 
-        await query.edit_message_text("🎯 Choose quality to get torrent:", reply_markup=InlineKeyboardMarkup(quality_buttons))
+buttons = []
+for torrent in data['data']['movie']['torrents']:
+    quality = torrent['quality']
+    hash_string = torrent['hash']
+    url = f"https://yts.mx/torrent/download/{hash_string}"
+    buttons.append([InlineKeyboardButton(quality, url=url)])
 
-    elif data.startswith("torrent_"):
-        torrent_url = data.replace("torrent_", "")
-        try:
-            r = requests.get(torrent_url)
-            r.raise_for_status()
+reply_markup = InlineKeyboardMarkup(buttons)
+await query.edit_message_text("Choose your preferred quality:", reply_markup=reply_markup)
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".torrent") as tf:
-                tf.write(r.content)
-                tf.flush()
+Main function
 
-                await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=open(tf.name, "rb"),
-                    filename="movie.torrent",
-                    caption="✅ Torrent ready!\nUse Flud or aTorrent to download.\nYou can also try [Webtor.io](https://webtor.io) to stream.",
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True
-                )
+def main(): app = Application.builder().token(BOT_TOKEN).build()
 
-        except Exception as e:
-            logger.error(f"Error sending torrent: {e}")
-            await query.edit_message_text("❌ Error sending the file.")
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_movie))
+app.add_handler(CallbackQueryHandler(movie_callback))
 
-# Run bot
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+app.run_polling()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
-    app.add_handler(CallbackQueryHandler(button_handler))
+if name == 'main': main()
 
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
